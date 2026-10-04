@@ -1,5 +1,27 @@
 # Madeira Dock — implementation handoff, ml2000 (2026-09-25)
 
+## Launch entry keys (2026-10-04)
+
+LaunchApp previously always received option 0, including on retry. The app now
+passes the original numeric key from Steam's launch configuration in
+`MADEIRA_STEAM_HOST_LAUNCH_OPTION`. `launch.c` validates it once and reuses it
+for every request. Missing input retains 0 for older launchers; invalid input
+returns 45 with `launch-option-invalid=1`. `launch-option-index` records the
+selected key. A bounded, decoded error-22 detail identifying a missing requested
+entry reports `launch-option-missing` and fails instead of waiting for config.
+The detail itself never enters a report or log.
+
+The app fetches metadata before prepareDock closes the native connection. It
+reuses the installed Windows/default entry selection, excludes DLC-only entries,
+and refetches old launch caches that lack original keys. Unavailable metadata
+or no eligible installed entry ends before the sign-in transfer is created.
+
+Validation on Windows: all four existing C suites (including new numeric-bound
+and bounded-detail cases) passed; x64 and i386 hosts compile with the pinned
+LLVM-MinGW 20260421 and warnings as errors. ASan/UBSan, Swift host suites and a
+device launch remain unverified. Use `tools/check.sh`, rebuild both app and host,
+then check numeric launch-option and launch-game-running fields on device.
+
 ## A manager that answers counts as started (2026-09-29)
 
 Device logs of Madeira's one-time-install batch on the upstream tree

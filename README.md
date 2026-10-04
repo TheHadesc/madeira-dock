@@ -28,6 +28,17 @@ original game DRM remain mandatory.
 
 ## Current operation
 
+The app resolves the game's Windows launch entry from Steam product info before
+closing its native connection. `MADEIRA_STEAM_HOST_LAUNCH_OPTION` carries the
+original numeric `config.launch` key, including nonzero and sparse keys. The
+host uses that key for the first LaunchApp request and every retry. An absent
+variable retains option 0 for older launchers; an empty, malformed or oversized
+value fails closed. Only numeric `launch-option-index`, `launch-option-invalid`
+and `launch-option-missing` fields are reported. A decoded error 22 whose bounded
+detail explicitly says the requested entry does not exist is not retried as a
+configuration download. Detail text is never logged. Other configuration waits,
+authentication and entitlement checks are unchanged.
+
 The original five-second bootstrap remains available. The opt-in session mode
 can now select the existing cached Steam account, ask Valve to authenticate it,
 read subscriptions through the authenticated client and submit an installed
