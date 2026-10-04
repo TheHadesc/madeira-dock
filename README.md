@@ -87,7 +87,8 @@ ownership assertions are present. A transfer is scoped to one requested AppID.
 
 The iOS trial is off until `MADEIRA_DOCK=1` is set in madeira-env.txt. It still
 uses Valve's official installer to prepare client files, requires the pinned
-client version, and supports the default launch option without custom args.
+client version, and starts the launch entry Madeira selects (`MADEIRA_STEAM_HOST_LAUNCH_OPTION`,
+the original `config.launch` key, including nonzero and sparse keys) without custom args.
 One native sign-in is intended to replace the desktop sign-in. Removing the
 installer and clean-prefix support remain future work; the existing-prefix
 authenticated device launch is confirmed above. `MADEIRA_DOCK=0` restores the existing desktop launch route.
@@ -162,6 +163,14 @@ its semantics remain unresolved and it is deliberately not sufficient to
 authorize launch. An absent App ID was rejected by the list gate. That test
 does not substitute for a future real-game test using a non-entitled account.
 The game's original DRM and Valve's own launch checks remain in place.
+
+`LaunchApp` is called with the validated `MADEIRA_STEAM_HOST_LAUNCH_OPTION`, the original
+numeric `config.launch` key (0 to 2147483647; absent means 0 for older launchers, malformed
+input fails closed with result 45), for the first request and every retry, and reported as
+numeric `launch-option-index` (`launch-option-invalid=1` for bad input). An error 22 whose
+bounded detail explicitly names the requested launch entry as missing reports
+`launch-option-missing` and stops instead of waiting for configuration; the detail itself is
+never logged.
 
 `LaunchApp` returns an asynchronous result. This exact DLL emits callback
 1270027 with **524** bytes, not the 528 bytes suggested by padded reference
