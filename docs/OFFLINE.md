@@ -58,4 +58,17 @@ with `false` and, only on refusal, once with `true`, and reports which was
 accepted), the values `GetLogonState` takes offline (reported, not interpreted),
 and how long Steam's offline logon ticket stays valid (Valve's client enforces
 that itself; when it expires the answer is 50 and an online start renews it).
-None of this has run on a device yet.
+
+## Device result
+
+2026-10-04, iPhone 18,3 / iOS 27.0, January client (adapter 202601), no network
+path: `session-offline-can=1`, `session-offline-logon-result=1` (accepted with
+`false`, no retry), `session-offline-logon-state=0` and unchanged (the state
+does not signal an offline logon, so nothing waits on it),
+`session-offline-entitled=1`, `session-offline-listed=1` with 1584 cached
+subscriptions one second after the logon, `launch-client-error=0`, the game's
+window 8 s after the host started. The account had signed in online earlier
+through the one-use token handoff, so that handoff leaves Valve's client able
+to log on offline. Not yet exercised on a device: a refusal (50, 51, 52), the
+connection-failure fallback, the September client, and a game with per-user
+executables.
