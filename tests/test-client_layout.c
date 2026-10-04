@@ -18,12 +18,19 @@ int main(void)
     strcpy(changed, jan->sha256); strcat(changed, "0");
     assert(!dock_client_layout(changed));
     uintptr_t base = 0x10000000;
-    void *vtable[183] = {0}; void **object = vtable;
+    void *vtable[216] = {0}; void **object = vtable;
     vtable[8] = (void *)(base + jan->engine_user);
     assert(dock_method_is(base, &object, 8, jan->engine_user));
     assert(!dock_method_is(base, &object, 8, sep->engine_user));
     assert(!dock_method_is(base, &object, 7, jan->engine_user));
     assert(jan->ceg_request == 0x82a8c0 && sep->ceg_request == 0x84e8b0);
+    /* Offline logon: slots 5, 214 and 215, pinned per build. */
+    assert(jan->logon_state == 0x7612c0 && jan->can_offline == 0x720330 && jan->logon_offline == 0x81dad0);
+    assert(sep->logon_state == 0x77e460 && sep->can_offline == 0x73cbb0 && sep->logon_offline == 0x8415d0);
+    vtable[215] = (void *)(base + jan->logon_offline);
+    assert(dock_method_is(base, &object, 215, jan->logon_offline));
+    assert(!dock_method_is(base, &object, 215, sep->logon_offline));
+    assert(!dock_method_is(base, &object, 214, jan->logon_offline));
     assert(!dock_method_is(base + 1, &object, 8, jan->engine_user));
     assert(!dock_method_is(base, NULL, 8, jan->engine_user));
     object = NULL;
