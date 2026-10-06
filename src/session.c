@@ -36,6 +36,90 @@ static bool enabled(const char *name)
     return s && !strcmp(s, "1");
 }
 
+typedef int32_t (__thiscall *state_fn)(void *);
+typedef int32_t (__thiscall *can_offline_fn)(void *);
+typedef int32_t (__thiscall *logon_offline_fn)(void *, bool);
+
+/* Offline start.
+ *
+ * Nothing here decides ownership or lets a game start by itself. Valve's client
+ * is asked whether this account may log on offline (CanLogonOffline: it needs the
+ * offline logon ticket Steam issued to it during an earlier online logon, which
+ * the client requests and stores on its own), is told to do so (LogOnOffline),
+ * and is then asked the same licence question as online, which it answers from
+ * what it cached itself. The game is started through the same LaunchApp call. A
+ * client that says no at any step ends the session with its own code:
+ *   50  the client cannot log this account on offline (start once online first)
+ *   51  the client refused the offline logon
+ *   52  logged on offline, but the client's cache does not list the game
+ * There is no path from a refusal to a started game. */
+static int offline_session(HMODULE module, void *engine, void *client_user, const struct sh_api *api,
+                           const struct sh_observer *o, int32_t pipe, int32_t user, uint64_t id,
+                           uint32_t app, const struct dock_client_layout *layout, bool use_list)
+{
+    void **v = *(void ***)client_user;
+    int32_t can = ((can_offline_fn)v[214])(client_user);
+    o->event("session-offline-can", can);
+    if (can != 1) return 50;
+    /* The wrapper takes one bool whose meaning the interface does not name; the
+     * client is asked with false first and, only if it refuses, once with true.
+     * Which one it accepted is reported. */
+    int32_t started = ((logon_offline_fn)v[215])(client_user, false);
+    o->event("session-offline-logon-result", started);
+    if (started != 1) {
+        started = ((logon_offline_fn)v[215])(client_user, true);
+        o->event("session-offline-logon-retry", started);
+    }
+    if (started != 1) return 51;
+
+    uint64_t begin = o->now_ms(), last_list = 0;
+    int32_t last_state = -1;
+    unsigned logged_callbacks = 0;
+    for (unsigned tick = 0; tick < 3000 && o->now_ms() - begin < 60000; ++tick) {
+        for (unsigned batch = 0; batch < 64; ++batch) {
+            struct sh_callback cb = {0};
+            if (!api->get_callback(pipe, &cb)) break;
+            bool valid = cb.id > 0 && cb.size >= 0 && (!cb.size || cb.data);
+            if (logged_callbacks++ < 16) o->event("session-offline-callback-id", cb.id);
+            api->free_callback(pipe);
+            if (!valid) return SH_CALLBACK_INVALID;
+        }
+        int32_t state = ((state_fn)v[5])(client_user);
+        if (state != last_state) {
+            o->event("session-offline-logon-state", state);
+            last_state = state;
+        }
+        uint64_t now = o->now_ms();
+        /* The client loads its cached licences after the offline logon; give it a
+         * second before the first question, then ask once a second. */
+        if (now - begin >= 1000 && now - last_list >= 1000) {
+            bool entitled = ((subscribed_fn)v[181])(client_user, app);
+            bool listed = false;
+            int32_t count = -1;
+            if (entitled || use_list) {
+                uint32_t *apps = calloc(65536, sizeof(uint32_t));
+                if (!apps) return 36;
+                count = ((subscriptions_fn)v[182])(client_user, apps, 65536, true);
+                if (count < 0 || count >= 65536) { free(apps); return 36; }
+                listed = sh_subscription_list_contains(apps, count, 65536, app);
+                free(apps);
+            }
+            last_list = now;
+            if (entitled || listed) {
+                o->event("session-offline-entitled", entitled);
+                o->event("session-offline-listed", listed);
+                o->event("session-subscription-count", count);
+                if (!listed) return 35;
+                if (!enabled("MADEIRA_STEAM_HOST_LAUNCH")) return 0;
+                return sh_launch(module, engine, client_user, api, o, pipe, user, id, app, layout);
+            }
+        }
+        o->sleep_ms(20);
+    }
+    o->event("session-offline-timeout-state", last_state);
+    return 52;
+}
+
 int sh_session(HMODULE module, void *engine, const struct sh_api *api,
                const struct sh_observer *o, const struct dock_client_layout *layout)
 {
@@ -63,6 +147,15 @@ int sh_session(HMODULE module, void *engine, const struct sh_api *api,
         }
     }
     o->event("session-private-abi-verified", 1);
+    /* Offline logon needs three more methods. A client where they do not check out
+     * (or MADEIRA_DOCK_OFFLINE_LOGON=0) simply has no offline start; the online
+     * path above is unaffected. */
+    const char *offline_setting = getenv("MADEIRA_DOCK_OFFLINE_LOGON");
+    bool offline_abi = !(offline_setting && !strcmp(offline_setting, "0")) &&
+        method_is(module, client_user, 5, layout->logon_state) &&
+        method_is(module, client_user, 214, layout->can_offline) &&
+        method_is(module, client_user, 215, layout->logon_offline);
+    o->event("session-offline-abi", offline_abi);
     if (!enabled("MADEIRA_STEAM_HOST_LOGIN")) {
         o->event("session-login-disabled", 1);
         result = 0;
@@ -121,16 +214,26 @@ int sh_session(HMODULE module, void *engine, const struct sh_api *api,
         o->event("session-cached-account-selected", selected);
         if (!selected) { result = 32; goto done; }
     }
+    /* MADEIRA_DOCK_LIST_ENTITLEMENT=0: only the single-app query decides, as before. */
+    const char *list_setting = getenv("MADEIRA_DOCK_LIST_ENTITLEMENT");
+    bool use_list = !(list_setting && !strcmp(list_setting, "0"));
+    /* MADEIRA_DOCK_OFFLINE=1: the launcher found no network. Valve's client is
+     * asked for an offline logon straight away instead of waiting out a
+     * connection that cannot happen. */
+    if (enabled("MADEIRA_DOCK_OFFLINE")) {
+        o->event("session-offline-requested", 1);
+        if (!offline_abi) { result = 50; goto done; }
+        result = offline_session(module, engine, client_user, api, o, pipe, user, id,
+                                 (uint32_t)app, layout, use_list);
+        goto done;
+    }
     int32_t started = ((logon_fn)v[1])(client_user, id);
     o->event("session-logon-start-result", started);
     if (started != 1) { result = 33; goto done; }
 
     uint64_t begin = o->now_ms(), online_at = 0, last_probe = 0, last_list = 0, offline_since = 0;
-    bool was_online = false;
-    unsigned logged_callbacks = 0, online_callbacks = 0, blips = 0, lost = 0;
-    /* MADEIRA_DOCK_LIST_ENTITLEMENT=0: only the single-app query decides, as before. */
-    const char *list_setting = getenv("MADEIRA_DOCK_LIST_ENTITLEMENT");
-    bool use_list = !(list_setting && !strcmp(list_setting, "0"));
+    bool was_online = false, offline_reported = false;
+    unsigned logged_callbacks = 0, online_callbacks = 0, blips = 0, lost = 0, connect_failures = 0;
     result = 34;
     for (unsigned tick = 0; tick < 4500 && o->now_ms() - begin < 90000; ++tick) {
         for (unsigned batch = 0; batch < 64; ++batch) {
@@ -149,9 +252,24 @@ int sh_session(HMODULE module, void *engine, const struct sh_api *api,
                 int32_t error;
                 memcpy(&error, cb.data, 4);
                 o->event("session-connection-result", error);
+                if (cb.id == 102) ++connect_failures;
             }
             api->free_callback(pipe);
             if (!valid) { result = SH_CALLBACK_INVALID; goto done; }
+        }
+        /* The network went away without the launcher noticing: the client has
+         * reported a failed connection, 20 s have passed and it never signed in.
+         * If Valve's client says the account may log on offline, do that instead
+         * of waiting out the 90 s. A client that says no keeps waiting as before. */
+        if (offline_abi && !was_online && connect_failures && o->now_ms() - begin >= 20000) {
+            int32_t can = ((can_offline_fn)v[214])(client_user);
+            o->event("session-offline-fallback", can);
+            if (can == 1) {
+                result = offline_session(module, engine, client_user, api, o, pipe, user, id,
+                                         (uint32_t)app, layout, use_list);
+                goto done;
+            }
+            connect_failures = 0;   /* ask again only after another failed connection */
         }
         bool signed_in = api->logged_on(user, pipe) &&
             ((query_fn)v[4])(client_user) && ((query_fn)v[6])(client_user);
@@ -226,8 +344,21 @@ int sh_session(HMODULE module, void *engine, const struct sh_api *api,
                     o->event("session-app-zero-query", ((subscribed_fn)v[181])(client_user, 0));
                     o->event("session-invalid-app-query", ((subscribed_fn)v[181])(client_user, UINT32_MAX));
                     result = listed ? 0 : 35;
-                    if (!result && enabled("MADEIRA_STEAM_HOST_LAUNCH"))
+                    /* For the launcher's "saved for offline play" mark: whether
+                     * Valve's client now holds what it needs to log this account
+                     * on without a connection (1 = yes). Asked when the licence is
+                     * confirmed and again after the game, since the client fetches
+                     * its offline logon ticket on its own schedule. */
+                    if (!result && offline_abi) {
+                        int32_t ready = ((can_offline_fn)v[214])(client_user);
+                        o->event("session-offline-ready", ready);
+                        offline_reported = ready == 1;
+                    }
+                    if (!result && enabled("MADEIRA_STEAM_HOST_LAUNCH")) {
                         result = sh_launch(module, engine, client_user, api, o, pipe, user, id, (uint32_t)app, layout);
+                        if (offline_abi && !offline_reported)
+                            o->event("session-offline-ready", ((can_offline_fn)v[214])(client_user));
+                    }
                     break;
                 }
             }

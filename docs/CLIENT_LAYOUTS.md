@@ -109,3 +109,19 @@ Extraction reads PE resources (STEAM_SPLIT_GUID/STEAM_GUIDD/STEAM_MINSTANCE)
 in process. The file list comes from the app manifest's CheckGuid entries.
 Delivery of 1020025 to a global-user pipe and server success remain unproven
 at runtime: this is static evidence only.
+
+## Offline logon (see OFFLINE.md)
+
+Both pinned builds add three called methods on IClientUserMap, at the same
+slots in each: 5 `GetLogonState` (September RVA `0x77e460`, January
+`0x7612c0`, IPC function `0xb3679023`), 214 `CanLogonOffline` (`0x73cbb0` /
+`0x720330`, `0xe391b9f0`) and 215 `LogOnOffline` (`0x8415d0` / `0x81dad0`,
+`0x706f013f`). `tools/check-client-layout.py` verifies slot, RVA, the method
+name each wrapper references through a RIP-relative LEA, and the function ID.
+
+Wrapper ABI, identical in both builds apart from call targets and the known
+signed-negative cleanup test: slots 5 and 214 take only `this` and read back a
+4-byte result; slot 215 takes `this` and one byte (dl, serialized as 1 byte)
+and reads back a 4-byte result. Neighbouring slots 216
+`ValidateOfflineLogonTicket` and 217 `BGetOfflineLogonTicket` are not called:
+Dock never handles the ticket itself.
